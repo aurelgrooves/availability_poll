@@ -391,7 +391,7 @@ class ErrorBoundary extends React.Component {
           </pre>
           <button
             onClick={() => this.setState({ error: null })}
-            style={{ marginTop: 16, background: "#E8A33D", color: "#14181F", border: "none", borderRadius: 8, padding: "10px 18px", fontWeight: 700, cursor: "pointer" }}
+            style={{ marginTop: 16, background: "#2FA860", color: "#14181F", border: "none", borderRadius: 8, padding: "10px 18px", fontWeight: 700, cursor: "pointer" }}
           >
             Try again
           </button>
@@ -1104,7 +1104,7 @@ function ResultsView({ t, locale, hour12, responses, loading, viewerTz, onExport
 }
 
 // ============ Styles ============
-const INK = "#14181F", PAPER = "#F7F4EE", AMBER = "#E8A33D", SLATE = "#8B93A3", LINE = "rgba(20,24,31,0.12)";
+const INK = "#14181F", PAPER = "#F7F4EE", GREEN = "#2FA860", SLATE = "#8B93A3", LINE = "rgba(20,24,31,0.12)";
 const DISPLAY_FONT = "'Avenir Next', 'Century Gothic', Futura, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 const MONO_FONT = "'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace";
 
@@ -1112,10 +1112,10 @@ const styles = {
   page: { minHeight: "100vh", background: INK, color: PAPER, fontFamily: DISPLAY_FONT, padding: "24px 16px 60px", display: "flex", justifyContent: "center" },
   shell: { width: "100%", maxWidth: 920 },
   topBar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
-  eyebrow: { fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.18em", color: AMBER, fontWeight: 600 },
+  eyebrow: { fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.18em", color: GREEN, fontWeight: 600 },
   langToggle: { display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "4px 8px" },
   langBtn: { fontFamily: MONO_FONT, fontSize: 11, border: "none", background: "transparent", color: SLATE, cursor: "pointer", padding: "2px 4px", fontWeight: 600 },
-  langBtnActive: { color: AMBER },
+  langBtnActive: { color: GREEN },
   langDivider: { color: "rgba(255,255,255,0.2)", fontSize: 11 },
   loadingText: { color: SLATE, fontFamily: MONO_FONT, fontSize: 13, marginTop: 40 },
   h1: { fontSize: "clamp(24px, 4.5vw, 34px)", fontWeight: 700, margin: "10px 0 4px", letterSpacing: "-0.02em" },
@@ -1128,25 +1128,25 @@ const styles = {
   field: { display: "flex", flexDirection: "column", gap: 6, minWidth: 220, flex: 1, marginBottom: 16 },
   miniLabel: { fontFamily: MONO_FONT, fontSize: 10, color: SLATE },
   label: { fontFamily: MONO_FONT, fontSize: 11, color: SLATE, letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: 8 },
-  detectedTag: { fontSize: 10, background: "rgba(232,163,61,0.15)", color: AMBER, padding: "2px 6px", borderRadius: 4 },
+  detectedTag: { fontSize: 10, background: "rgba(47,168,96,0.15)", color: GREEN, padding: "2px 6px", borderRadius: 4 },
   input: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "10px 12px", color: PAPER, fontSize: 14, fontFamily: DISPLAY_FONT, outline: "none" },
   mutedText: { color: SLATE, fontSize: 12, marginTop: 2 },
   chipsWrap: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 },
-  chip: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(232,163,61,0.14)", color: AMBER, padding: "6px 8px 6px 12px", borderRadius: 20, fontFamily: MONO_FONT, fontSize: 12 },
-  chipX: { border: "none", background: "transparent", color: AMBER, cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 4px" },
+  chip: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(47,168,96,0.14)", color: GREEN, padding: "6px 8px 6px 12px", borderRadius: 20, fontFamily: MONO_FONT, fontSize: 12 },
+  chipX: { border: "none", background: "transparent", color: GREEN, cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 4px" },
   gridWrap: { background: PAPER, borderRadius: 14, padding: 12, overflowX: "auto", userSelect: "none" },
   gridInner: { display: "grid", minWidth: 560 },
   cornerCell: { position: "sticky", left: 0, background: PAPER, zIndex: 2 },
   dayHeader: { fontFamily: MONO_FONT, fontSize: 11, fontWeight: 600, color: INK, textAlign: "center", padding: "6px 2px 10px", borderBottom: `2px solid ${INK}` },
   timeLabelCell: { fontFamily: MONO_FONT, fontSize: 11, color: "#5b6270", textAlign: "right", paddingRight: 10, position: "sticky", left: 0, background: PAPER, display: "flex", alignItems: "flex-start", justifyContent: "flex-end", height: 18, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
   cell: { height: 18, borderTop: `1px solid ${LINE}`, borderLeft: `1px solid ${LINE}`, cursor: "pointer", background: "transparent", transition: "background 60ms ease" },
-  cellOn: { background: AMBER },
+  cellOn: { background: GREEN },
   footerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, gap: 12, flexWrap: "wrap" },
   countTag: { fontFamily: MONO_FONT, fontSize: 12, color: SLATE },
-  submitBtn: { background: AMBER, color: INK, border: "none", borderRadius: 8, padding: "11px 22px", fontWeight: 700, fontSize: 14, fontFamily: DISPLAY_FONT, cursor: "pointer" },
+  submitBtn: { background: GREEN, color: INK, border: "none", borderRadius: 8, padding: "11px 22px", fontWeight: 700, fontSize: 14, fontFamily: DISPLAY_FONT, cursor: "pointer" },
   submitBtnDisabled: { opacity: 0.35, cursor: "not-allowed" },
   errorText: { marginTop: 10, color: "#F28B82", fontSize: 13, fontFamily: MONO_FONT },
-  successBanner: { marginTop: 14, background: "rgba(232,163,61,0.12)", color: AMBER, border: "1px solid rgba(232,163,61,0.3)", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: MONO_FONT },
+  successBanner: { marginTop: 14, background: "rgba(47,168,96,0.12)", color: GREEN, border: "1px solid rgba(47,168,96,0.3)", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: MONO_FONT },
   resultsBar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 },
   smallBtn: { background: "rgba(255,255,255,0.08)", color: PAPER, border: "1px solid rgba(255,255,255,0.15)", borderRadius: 7, padding: "9px 14px", fontSize: 12, fontFamily: MONO_FONT, cursor: "pointer" },
   emptyState: { color: SLATE, fontSize: 14, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 24, textAlign: "center" },
@@ -1155,7 +1155,7 @@ const styles = {
   bestRow: { display: "grid", gridTemplateColumns: "200px 1fr 60px", alignItems: "center", gap: 12, marginBottom: 10 },
   bestTime: { fontFamily: MONO_FONT, fontSize: 13, fontWeight: 600 },
   barTrack: { height: 10, background: "rgba(20,24,31,0.08)", borderRadius: 6, overflow: "hidden" },
-  barFill: { height: "100%", background: AMBER, borderRadius: 6 },
+  barFill: { height: "100%", background: GREEN, borderRadius: 6 },
   bestCount: { fontFamily: MONO_FONT, fontSize: 12, color: "#5b6270", textAlign: "right" },
   respList: { background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 20 },
   respRow: { display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: 13 },
