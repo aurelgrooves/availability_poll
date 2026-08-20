@@ -1,227 +1,1241 @@
-/**
- * Availability Survey — backend (multi-poll)
- * ----------------------------------------------
- * One deployment backs any number of polls, all listed and managed from
- * inside the tool itself (create / rename / delete — no per-poll setup
- * needed here).
- *
- *   Surveys sheet    — one row per poll: survey_id, config_json, updated_at
- *   Responses: <id>  — one tab per poll, auto-created, one row per
- *                       (person, marked slot) — easy to open and pivot on.
- *
- * Deploy: Extensions > Apps Script > paste this in > Deploy > New
- * deployment > type "Web app" > Execute as: Me > Who has access: Anyone.
- * After editing this file, you must push a NEW deployment VERSION
- * (Deploy > Manage deployments > pencil icon > New version) for changes
- * to reach the existing Web app URL.
- */
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Availability Polls</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
 
-var SURVEYS_SHEET = 'Surveys';
-var RESPONSES_PREFIX = 'Responses: ';
+// ============ CONSTANTS ============
+// Paste the Web app URL from your Apps Script deployment here (Deploy >
+// New deployment > Web app, execute as Me, access: Anyone). See Code.gs
+// for the backend to deploy first. ONE url covers every poll — polls are
+// created, renamed, and deleted from inside the tool, not by editing
+// this file.
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxsMDMoIRTz-S1shol-es-zvfbIRtsFvWXtCGeR5VvEYtnNU0P0IrqFQELYOSd_ANCLZQ/exec";
 
-function doGet(e) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var params = (e && e.parameter) || {};
-  var action = params.action;
-  var surveyId = params.survey;
+const SLOT_MIN = 30;
 
-  if (action === 'listSurveys') {
-    return jsonOut_({ surveys: listSurveys_(ss) });
-  }
-  if (action === 'getConfig') {
-    if (!surveyId) return jsonOut_({ error: 'missing survey id' });
-    return jsonOut_({ config: readConfig_(ss, surveyId) });
-  }
-  if (action === 'listResponses') {
-    if (!surveyId) return jsonOut_({ error: 'missing survey id' });
-    return jsonOut_({ responses: readResponses_(ss, surveyId) });
-  }
-  return jsonOut_({ error: 'unknown action', hint: 'Use ?action=listSurveys, ?action=getConfig&survey=ID, or ?action=listResponses&survey=ID.' });
+const COMMON_ZONES = [
+  "Pacific/Honolulu","America/Anchorage","America/Los_Angeles","America/Denver",
+  "America/Chicago","America/New_York","America/Sao_Paulo","UTC","Europe/London",
+  "Europe/Paris","Europe/Berlin","Africa/Lagos","Africa/Douala","Africa/Johannesburg",
+  "Europe/Moscow","Asia/Dubai","Asia/Kolkata","Asia/Dhaka","Asia/Bangkok","Asia/Shanghai",
+  "Asia/Tokyo","Australia/Sydney","Pacific/Auckland",
+];
+
+const OUTPUT_TAGS = [
+  { id: "I", label: "I – Data hub" },
+  { id: "II", label: "II – OECM+" },
+  { id: "III", label: "III – Restoration + Health Care" },
+  { id: "IV", label: "IV – Early warning system" },
+  { id: "V", label: "V – Policy" },
+];
+function tagLabel(id) {
+  const found = OUTPUT_TAGS.find((o) => o.id === id);
+  return found ? found.label : id;
 }
 
-function doPost(e) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (!e || !e.postData) {
-    return jsonOut_({ ok: false, error: 'no post data — this endpoint expects a POST request with a JSON body, not a manual Run.' });
-  }
-  var body;
+// ============ i18n ============
+const STRINGS = {
+  en: {
+    eyebrow: "INFORBIO COORDINATED SCHEDULING",
+    pickerTitle: "Availability polls",
+    pickerSub: "Pick a poll to complete, or start a new one.",
+    newPollBtn: "+ New poll",
+    noPollsYet: "No polls yet. Create the first one.",
+    openBtn: "Open",
+    responsesCount: (n) => `${n} response${n === 1 ? "" : "s"}`,
+    setupHeadingNew: "Set up your availability poll",
+    setupHeadingEdit: "Edit poll settings",
+    setupSub: "Choose the dates and time window you want people to respond to. Times below are entered in your own time zone — every respondent's screen converts automatically to theirs.",
+    titleLabel: "Poll title",
+    titlePlaceholder: "e.g. Q3 planning sync",
+    descLabel: "Description (optional)",
+    descPlaceholder: "Add context for respondents…",
+    datesLabel: "Dates to survey",
+    addDate: "Add date",
+    noDatesYet: "No dates added yet.",
+    outputsLabel: "Relevant outputs",
+    outputsHint: "Select the outputs this meeting concerns, so people can see at a glance whether it's relevant to them.",
+    windowLabel: "Time window (applies to every date, in your zone)",
+    fromLabel: "From",
+    toLabel: "To",
+    yourTzLabel: "Your time zone",
+    autoDetected: "auto-detected",
+    passLabel: "Edit passphrase (optional)",
+    passPlaceholder: "Set a passphrase to protect edits",
+    passHint: "Anyone with this passphrase can edit or delete this poll later. Leave blank for no lock.",
+    publishBtn: "Publish poll",
+    saveBtn: "Save changes",
+    cancelEditBtn: "Cancel",
+    needAtLeastOneDate: "Add at least one date before publishing.",
+    needValidWindow: "End time must be after start time.",
+    needTitle: "Give the poll a title.",
+    respSub: "Drag across the grid to mark open hours. Times shown are in your zone — everyone else's picks convert automatically to theirs.",
+    tabPick: "Mark availability",
+    tabResults: "View responses",
+    nameLabel: "Your name",
+    namePlaceholder: "e.g. Lili",
+    noSlotsYet: "No slots marked yet",
+    submitBtn: "Submit availability",
+    savedBanner: "Saved. Switch to “View responses” to see everyone's overlap.",
+    saveError: "Couldn't save — check your connection and try again.",
+    organizerLink: "Organizing this poll? Edit settings",
+    backToPolls: "← Back to all polls",
+    shareBtn: "Share this poll",
+    linkCopied: "Link copied!",
+    shareFallback: "Copied the poll name — this tool couldn't detect a direct link in its current embed. Share your site's link and have them pick “{title}” from the list.",
+    shareFallbackCopied: "Copied a message you can share",
+    passPrompt: "Enter the passphrase to edit this poll",
+    passPlaceholderGate: "Passphrase",
+    unlockBtn: "Unlock",
+    wrongPass: "That passphrase doesn't match.",
+    cancelBtn: "Cancel",
+    clearResponsesBtn: "Clear all responses",
+    clearResponsesConfirm: "This permanently deletes every submitted response. Continue?",
+    loading: "Loading…",
+    refresh: "Refresh",
+    copySummary: "Copy summary",
+    copied: "Copied!",
+    exportCsv: "Export CSV",
+    noResponsesYet: "Nobody's submitted yet. Once they do, best overlapping times show up here — automatically converted to your zone.",
+    bestTimes: "Best overlapping times",
+    allResponses: "All responses",
+    remove: "Remove",
+    needsSetupTitle: "Connect your Google Sheet",
+    needsSetupBody: "This tool saves to a Google Sheet through a small Apps Script backend, so everyone sees the same polls and responses.",
+    needsSetupSteps: [
+      "Create a new Google Sheet.",
+      "Extensions → Apps Script, and paste in the provided Code.gs.",
+      "Deploy → New deployment → type: Web app. Execute as “Me”, who has access: “Anyone”.",
+      "Copy the Web app URL, paste it into APPS_SCRIPT_URL near the top of this HTML file.",
+      "Re-copy the updated HTML into your Google Site's embed code.",
+    ],
+    connectionErrorTitle: "Couldn't reach the Google Sheet",
+    connectionErrorBody: "Check that the Apps Script URL is correct and the deployment's access is set to “Anyone.”",
+    retryBtn: "Retry",
+    configSaveFailed: "Saved locally, but couldn't confirm it reached the Sheet — check your Apps Script deployment.",
+    responseSaveFailed: "Couldn't confirm your response reached the Sheet — check your connection and try again.",
+    deleteSurveyBtn: "Delete this poll",
+    deleteSurveyConfirm: "This permanently deletes the poll's settings and its entire responses tab in the Sheet. This can't be undone. Continue?",
+    deleteSurveyFailed: "Couldn't delete the poll — check the passphrase and try again.",
+  },
+  fr: {
+    eyebrow: "PLANIFICATION COORDONNÉE",
+    pickerTitle: "Sondages de disponibilité",
+    pickerSub: "Choisissez un sondage à remplir, ou créez-en un nouveau.",
+    newPollBtn: "+ Nouveau sondage",
+    noPollsYet: "Aucun sondage pour l'instant. Créez le premier.",
+    openBtn: "Ouvrir",
+    responsesCount: (n) => `${n} réponse${n === 1 ? "" : "s"}`,
+    setupHeadingNew: "Configurer votre sondage de disponibilité",
+    setupHeadingEdit: "Modifier les paramètres du sondage",
+    setupSub: "Choisissez les dates et la plage horaire pour lesquelles vous souhaitez recueillir les disponibilités. Les horaires ci-dessous sont saisis dans votre propre fuseau horaire — l'écran de chaque répondant les convertit automatiquement dans le sien.",
+    titleLabel: "Titre du sondage",
+    titlePlaceholder: "ex. Réunion de planification T3",
+    descLabel: "Description (facultatif)",
+    descPlaceholder: "Ajoutez du contexte pour les répondants…",
+    datesLabel: "Dates à sonder",
+    addDate: "Ajouter une date",
+    noDatesYet: "Aucune date ajoutée pour l'instant.",
+    outputsLabel: "Outputs concernés",
+    outputsHint: "Sélectionnez les outputs concernés par cette réunion, pour que chacun voie en un coup d'œil si elle le concerne.",
+    windowLabel: "Plage horaire (s'applique à chaque date, dans votre fuseau)",
+    fromLabel: "De",
+    toLabel: "À",
+    yourTzLabel: "Votre fuseau horaire",
+    autoDetected: "détecté automatiquement",
+    passLabel: "Mot de passe de modification (facultatif)",
+    passPlaceholder: "Définir un mot de passe pour protéger les modifications",
+    passHint: "Toute personne disposant de ce mot de passe pourra modifier ou supprimer ce sondage. Laissez vide pour ne pas verrouiller.",
+    publishBtn: "Publier le sondage",
+    saveBtn: "Enregistrer les modifications",
+    cancelEditBtn: "Annuler",
+    needAtLeastOneDate: "Ajoutez au moins une date avant de publier.",
+    needValidWindow: "L'heure de fin doit être après l'heure de début.",
+    needTitle: "Donnez un titre au sondage.",
+    respSub: "Faites glisser sur la grille pour marquer vos disponibilités. Les horaires affichés sont dans votre fuseau — les choix des autres se convertissent automatiquement dans le leur.",
+    tabPick: "Indiquer mes disponibilités",
+    tabResults: "Voir les réponses",
+    nameLabel: "Votre nom",
+    namePlaceholder: "ex. Lili",
+    noSlotsYet: "Aucun créneau marqué",
+    submitBtn: "Envoyer mes disponibilités",
+    savedBanner: "Enregistré. Consultez « Voir les réponses » pour voir les créneaux communs.",
+    saveError: "Impossible d'enregistrer — vérifiez votre connexion et réessayez.",
+    organizerLink: "Vous organisez ce sondage ? Modifier les paramètres",
+    backToPolls: "← Retour à tous les sondages",
+    shareBtn: "Partager ce sondage",
+    linkCopied: "Lien copié !",
+    shareFallback: "Nom du sondage copié — cet outil n'a pas pu détecter de lien direct dans son intégration actuelle. Partagez le lien de votre site et demandez de choisir « {title} » dans la liste.",
+    shareFallbackCopied: "Message à partager copié",
+    passPrompt: "Entrez le mot de passe pour modifier ce sondage",
+    passPlaceholderGate: "Mot de passe",
+    unlockBtn: "Déverrouiller",
+    wrongPass: "Ce mot de passe est incorrect.",
+    cancelBtn: "Annuler",
+    clearResponsesBtn: "Supprimer toutes les réponses",
+    clearResponsesConfirm: "Cette action supprime définitivement toutes les réponses envoyées. Continuer ?",
+    loading: "Chargement…",
+    refresh: "Actualiser",
+    copySummary: "Copier le résumé",
+    copied: "Copié !",
+    exportCsv: "Exporter en CSV",
+    noResponsesYet: "Personne n'a encore répondu. Dès les premières réponses, les meilleurs créneaux communs apparaîtront ici — convertis automatiquement dans votre fuseau.",
+    bestTimes: "Meilleurs créneaux communs",
+    allResponses: "Toutes les réponses",
+    remove: "Retirer",
+    needsSetupTitle: "Connectez votre feuille Google",
+    needsSetupBody: "Cet outil enregistre les données dans une feuille Google via un petit script Apps Script, pour que tout le monde voie les mêmes sondages et réponses.",
+    needsSetupSteps: [
+      "Créez une nouvelle feuille Google (Google Sheet).",
+      "Extensions → Apps Script, puis collez le fichier Code.gs fourni.",
+      "Déployer → Nouveau déploiement → type : Application Web. Exécuter en tant que « Moi », accès : « Tout le monde ».",
+      "Copiez l'URL de l'application Web et collez-la dans APPS_SCRIPT_URL en haut de ce fichier HTML.",
+      "Recopiez le HTML mis à jour dans le bloc intégré (embed) de votre Google Site.",
+    ],
+    connectionErrorTitle: "Impossible de joindre la feuille Google",
+    connectionErrorBody: "Vérifiez que l'URL Apps Script est correcte et que l'accès du déploiement est bien « Tout le monde ».",
+    retryBtn: "Réessayer",
+    configSaveFailed: "Enregistré localement, mais impossible de confirmer l'envoi vers la feuille — vérifiez votre déploiement Apps Script.",
+    responseSaveFailed: "Impossible de confirmer que votre réponse a bien été enregistrée — vérifiez votre connexion et réessayez.",
+    deleteSurveyBtn: "Supprimer ce sondage",
+    deleteSurveyConfirm: "Cette action supprime définitivement les paramètres du sondage et tout son onglet de réponses dans la feuille. Impossible d'annuler. Continuer ?",
+    deleteSurveyFailed: "Impossible de supprimer le sondage — vérifiez le mot de passe et réessayez.",
+  },
+};
+
+// ============ Time helpers ============
+function detectTZ() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
+  catch { return "UTC"; }
+}
+function tzLabel(tz) {
   try {
-    body = JSON.parse(e.postData.contents);
-  } catch (err) {
-    return jsonOut_({ ok: false, error: 'bad request' });
+    const off = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+      .formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value;
+    return `${tz.replace(/_/g, " ")} (${off || ""})`;
+  } catch { return tz; }
+}
+function tzShort(tz) {
+  try {
+    const off = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+      .formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value;
+    return `${tz.split("/").pop().replace(/_/g, " ")} (${off})`;
+  } catch { return tz; }
+}
+function getOffsetMinutes(date, tz) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const parts = dtf.formatToParts(date).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  const asUTC = Date.UTC(
+    parseInt(parts.year), parseInt(parts.month) - 1, parseInt(parts.day),
+    parseInt(parts.hour), parseInt(parts.minute), parseInt(parts.second)
+  );
+  return (asUTC - date.getTime()) / 60000;
+}
+function slotToDate(dateStr, slotIdx, baseTz, startMinutes) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const totalMinutes = startMinutes + slotIdx * SLOT_MIN;
+  const hh = Math.floor(totalMinutes / 60);
+  const mm = totalMinutes % 60;
+  let guess = new Date(Date.UTC(y, m - 1, d, hh, mm));
+  for (let i = 0; i < 2; i++) {
+    const off = getOffsetMinutes(guess, baseTz);
+    guess = new Date(Date.UTC(y, m - 1, d, hh, mm) - off * 60000);
   }
-  var action = body.action;
-  var payload = body.payload || {};
-  var surveyId = payload.surveyId;
-
-  if (!surveyId) {
-    return jsonOut_({ ok: false, error: 'missing survey id' });
+  return guess;
+}
+function colHeaderLabel(date, tz, locale) {
+  return new Intl.DateTimeFormat(locale, { timeZone: tz, weekday: "short", month: "short", day: "numeric" }).format(date);
+}
+function timeLabel(date, tz, locale, hour12) {
+  return new Intl.DateTimeFormat(locale, { timeZone: tz, hour: "numeric", minute: "2-digit", hour12 }).format(date);
+}
+function fullLabel(date, tz, locale, hour12) {
+  return new Intl.DateTimeFormat(locale, { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12 }).format(date);
+}
+function minutesLabel(min, lang) {
+  const hh = Math.floor(min / 60), mm = min % 60;
+  if (lang === "fr") return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  const hh12 = ((hh + 11) % 12) + 1;
+  const ap = hh < 12 ? "AM" : "PM";
+  return `${hh12}:${String(mm).padStart(2, "0")} ${ap}`;
+}
+function timeOptions(lang) {
+  const opts = [];
+  for (let m = 0; m <= 23 * 60 + 30; m += 30) opts.push({ value: m, label: minutesLabel(m, lang) });
+  return opts;
+}
+function slotKey(dateIdx, slotIdx) { return `${dateIdx}-${slotIdx}`; }
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function dateRangeSummary(dates, tz, locale) {
+  if (!dates || dates.length === 0) return "";
+  const sorted = [...dates].sort();
+  const fmt = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(Date.UTC(y, m - 1, d, 12)));
+  };
+  if (sorted.length === 1) return fmt(sorted[0]);
+  return `${fmt(sorted[0])} – ${fmt(sorted[sorted.length - 1])} (${sorted.length})`;
+}
+function slugify(title) {
+  return (title || "")
+    .toLowerCase()
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 40) || "poll";
+}
+function generateSurveyId(title) {
+  return `${slugify(title)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+function getSharedPollIdFromHash() {
+  const raw = window.location.hash || "";
+  const m = raw.match(/poll=([^&]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+// Best-effort: builds a link that jumps straight to a poll. Only reliable
+// when this file is hosted at its own real URL — inside a sandboxed embed
+// (e.g. Google Sites "Embed code"), the frame usually can't see the outer
+// page's address, so this falls back to null and callers should offer a
+// plain-text fallback instead of a broken link.
+function buildShareLink(surveyId) {
+  let topUrl = null;
+  try {
+    topUrl = window.top.location.href;
+  } catch (e) {
+    topUrl = null;
   }
+  if (!topUrl) return null;
+  const withoutHash = topUrl.split("#")[0];
+  return `${withoutHash}#poll=${encodeURIComponent(surveyId)}`;
+}
 
-  if (action === 'saveConfig') {
-    writeConfig_(ss, surveyId, payload);
-    return jsonOut_({ ok: true });
+// ============ Backend (Google Apps Script + Sheet) ============
+const SCRIPT_NOT_CONFIGURED = !APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("PASTE_YOUR") === 0;
+
+async function apiListSurveys() {
+  const res = await fetch(`${APPS_SCRIPT_URL}?action=listSurveys`);
+  if (!res.ok) throw new Error("network");
+  const data = await res.json();
+  return data.surveys || [];
+}
+async function apiGetConfig(surveyId) {
+  const res = await fetch(`${APPS_SCRIPT_URL}?action=getConfig&survey=${encodeURIComponent(surveyId)}`);
+  if (!res.ok) throw new Error("network");
+  const data = await res.json();
+  return data.config || null;
+}
+async function apiListResponses(surveyId) {
+  const res = await fetch(`${APPS_SCRIPT_URL}?action=listResponses&survey=${encodeURIComponent(surveyId)}`);
+  if (!res.ok) throw new Error("network");
+  const data = await res.json();
+  return data.responses || [];
+}
+// Apps Script Web Apps redirect POST requests in a way that can drop the
+// request body in some browsers, so writes go out as opaque no-cors
+// requests and are verified afterward with a normal (readable) GET.
+async function apiPostRaw(action, payload) {
+  await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action, payload }),
+  });
+}
+async function apiSaveConfig(surveyId, config) {
+  await apiPostRaw("saveConfig", { ...config, surveyId });
+  const confirmed = await apiGetConfig(surveyId);
+  const ok = confirmed && confirmed.updatedAt === config.updatedAt;
+  return { ok: !!ok, config: confirmed };
+}
+async function apiSaveResponse(surveyId, record) {
+  await apiPostRaw("saveResponse", { ...record, surveyId });
+  const responses = await apiListResponses(surveyId);
+  const ok = responses.some((r) => r.id === record.id);
+  return { ok, responses };
+}
+async function apiClearResponses(surveyId, passphrase) {
+  await apiPostRaw("clearResponses", { surveyId, passphrase });
+  const responses = await apiListResponses(surveyId);
+  return { ok: responses.length === 0, responses };
+}
+async function apiDeleteSurvey(surveyId, passphrase) {
+  await apiPostRaw("deleteSurvey", { surveyId, passphrase });
+  const confirmed = await apiGetConfig(surveyId);
+  return { ok: confirmed === null };
+}
+
+// ============ Error boundary (shows the real error instead of a blank page) ============
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
   }
-
-  if (action === 'saveResponse') {
-    appendResponse_(ss, surveyId, payload);
-    return jsonOut_({ ok: true });
+  static getDerivedStateFromError(error) {
+    return { error };
   }
-
-  if (action === 'clearResponses') {
-    var cfg = readConfig_(ss, surveyId);
-    if (cfg && cfg.passphrase && cfg.passphrase !== payload.passphrase) {
-      return jsonOut_({ ok: false, error: 'unauthorized' });
+  componentDidCatch(error, info) {
+    console.error("Availability tool crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight: "100vh", background: "#14181F", color: "#F7F4EE", fontFamily: "sans-serif", padding: 30 }}>
+          <h2 style={{ marginTop: 0 }}>Something went wrong</h2>
+          <p style={{ color: "#8B93A3" }}>The page hit an unexpected error and stopped rendering. The details below will help fix it:</p>
+          <pre style={{ background: "rgba(255,255,255,0.06)", padding: 16, borderRadius: 8, whiteSpace: "pre-wrap", fontSize: 13 }}>
+            {String(this.state.error && (this.state.error.stack || this.state.error.message || this.state.error))}
+          </pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ marginTop: 16, background: "#2FA860", color: "#14181F", border: "none", borderRadius: 8, padding: "10px 18px", fontWeight: 700, cursor: "pointer" }}
+          >
+            Try again
+          </button>
+        </div>
+      );
     }
-    clearResponses_(ss, surveyId);
-    return jsonOut_({ ok: true });
+    return this.props.children;
   }
-
-  if (action === 'deleteSurvey') {
-    var cfg2 = readConfig_(ss, surveyId);
-    if (cfg2 && cfg2.passphrase && cfg2.passphrase !== payload.passphrase) {
-      return jsonOut_({ ok: false, error: 'unauthorized' });
-    }
-    deleteSurvey_(ss, surveyId);
-    return jsonOut_({ ok: true });
-  }
-
-  return jsonOut_({ ok: false, error: 'unknown action' });
 }
 
-// ---------- helpers ----------
+// ============ App ============
+function App() {
+  const [lang, setLang] = useState(() => (navigator.language || "en").toLowerCase().startsWith("fr") ? "fr" : "en");
+  const t = STRINGS[lang];
+  const locale = lang === "fr" ? "fr-FR" : "en-US";
+  const hour12 = lang !== "fr";
 
-function jsonOut_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
+  const [screen, setScreen] = useState("loading"); // loading | needs-setup | connection-error | picker | create | respond | gate | edit
+  const [surveys, setSurveys] = useState([]);
+  const [surveysLoading, setSurveysLoading] = useState(false);
+  const [currentId, setCurrentId] = useState(null);
+  const [currentConfig, setCurrentConfig] = useState(null);
 
-function getSheet_(ss, name, headers) {
-  var sh = ss.getSheetByName(name);
-  if (!sh) {
-    sh = ss.insertSheet(name);
-    sh.appendRow(headers);
-  }
-  return sh;
-}
-
-// Google Sheets tab names can't contain []*?/\: and are capped at 100 chars.
-function responsesSheetName_(surveyId) {
-  var clean = String(surveyId).replace(/[\[\]\*\?\/\\:]/g, '-');
-  var name = RESPONSES_PREFIX + clean;
-  return name.substring(0, 100);
-}
-
-function listSurveys_(ss) {
-  var sh = getSheet_(ss, SURVEYS_SHEET, ['survey_id', 'config_json', 'updated_at']);
-  var values = sh.getDataRange().getValues();
-  var out = [];
-  for (var i = 1; i < values.length; i++) {
-    var surveyId = values[i][0];
-    if (!surveyId) continue;
-    var cfg;
+  const refreshSurveys = useCallback(async () => {
+    setSurveysLoading(true);
     try {
-      cfg = JSON.parse(values[i][1]);
-    } catch (err) {
-      continue;
+      setSurveys(await apiListSurveys());
+    } catch {
+      // keep whatever list we already have
+    } finally {
+      setSurveysLoading(false);
     }
-    out.push({
-      surveyId: surveyId,
-      title: cfg.title,
-      description: cfg.description,
-      tags: cfg.tags || [],
-      dates: cfg.dates,
-      startMinutes: cfg.startMinutes,
-      endMinutes: cfg.endMinutes,
-      tz: cfg.tz,
-      hasPassphrase: !!cfg.passphrase,
-      updatedAt: values[i][2],
-      responseCount: countRespondents_(ss, surveyId),
+  }, []);
+
+  const initialLoad = useCallback(async () => {
+    if (SCRIPT_NOT_CONFIGURED) { setScreen("needs-setup"); return; }
+    setScreen("loading");
+    try {
+      const sharedId = getSharedPollIdFromHash();
+      if (sharedId) {
+        try {
+          const cfg = await apiGetConfig(sharedId);
+          if (cfg) {
+            setCurrentId(sharedId);
+            setCurrentConfig(cfg);
+            setScreen("respond");
+            return;
+          }
+        } catch {
+          // fall through to the picker below
+        }
+      }
+      const list = await apiListSurveys();
+      setSurveys(list);
+      setScreen("picker");
+    } catch {
+      setScreen("connection-error");
+    }
+  }, []);
+
+  useEffect(() => { initialLoad(); }, [initialLoad]);
+
+  async function openSurvey(id) {
+    setScreen("loading");
+    try {
+      const cfg = await apiGetConfig(id);
+      setCurrentId(id);
+      setCurrentConfig(cfg);
+      setScreen("respond");
+    } catch {
+      setScreen("connection-error");
+    }
+  }
+
+  function handleCreated(id, config) {
+    setCurrentId(id);
+    setCurrentConfig(config);
+    setScreen("respond");
+    refreshSurveys();
+  }
+
+  function handleEdited(config) {
+    setCurrentConfig(config);
+    setScreen("respond");
+    refreshSurveys();
+  }
+
+  function handleDeleted() {
+    setCurrentId(null);
+    setCurrentConfig(null);
+    setScreen("picker");
+    refreshSurveys();
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.shell}>
+        <div style={styles.topBar}>
+          <div style={styles.eyebrow}>{screen !== "loading" ? t.eyebrow : ""}</div>
+          <div style={styles.langToggle}>
+            <button onClick={() => setLang("en")} style={{ ...styles.langBtn, ...(lang === "en" ? styles.langBtnActive : {}) }}>EN</button>
+            <span style={styles.langDivider}>|</span>
+            <button onClick={() => setLang("fr")} style={{ ...styles.langBtn, ...(lang === "fr" ? styles.langBtnActive : {}) }}>FR</button>
+          </div>
+        </div>
+
+        {screen === "loading" && <div style={styles.loadingText}>{t.loading}</div>}
+
+        {screen === "needs-setup" && (
+          <div style={styles.gateBox}>
+            <h1 style={styles.h1}>{t.needsSetupTitle}</h1>
+            <p style={styles.sub}>{t.needsSetupBody}</p>
+            <ol style={styles.stepsList}>
+              {t.needsSetupSteps.map((s, i) => <li key={i} style={styles.stepsItem}>{s}</li>)}
+            </ol>
+          </div>
+        )}
+
+        {screen === "connection-error" && (
+          <div style={styles.gateBox}>
+            <h1 style={styles.h1}>{t.connectionErrorTitle}</h1>
+            <p style={styles.sub}>{t.connectionErrorBody}</p>
+            <button onClick={initialLoad} style={styles.submitBtn}>{t.retryBtn}</button>
+          </div>
+        )}
+
+        {screen === "picker" && (
+          <PickerScreen
+            t={t} locale={locale}
+            surveys={surveys} loading={surveysLoading}
+            onOpen={openSurvey}
+            onCreateNew={() => setScreen("create")}
+          />
+        )}
+
+        {screen === "create" && (
+          <SetupForm
+            key="create"
+            t={t} lang={lang}
+            surveyId={null}
+            existingConfig={null}
+            onSaved={handleCreated}
+            onCancel={() => setScreen("picker")}
+            onDeleted={handleDeleted}
+          />
+        )}
+
+        {screen === "edit" && currentConfig && (
+          <SetupForm
+            key={currentId}
+            t={t} lang={lang}
+            surveyId={currentId}
+            existingConfig={currentConfig}
+            onSaved={handleEdited}
+            onCancel={() => setScreen("respond")}
+            onDeleted={handleDeleted}
+          />
+        )}
+
+        {screen === "gate" && currentConfig && (
+          <PassGate
+            t={t}
+            config={currentConfig}
+            onUnlock={() => setScreen("edit")}
+            onCancel={() => setScreen("respond")}
+          />
+        )}
+
+        {screen === "respond" && currentConfig && (
+          <RespondentApp
+            t={t} lang={lang} locale={locale} hour12={hour12}
+            surveyId={currentId}
+            config={currentConfig}
+            onOrganizerClick={() => setScreen(currentConfig.passphrase ? "gate" : "edit")}
+            onBackToPolls={() => { setScreen("picker"); refreshSurveys(); }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============ Picker ============
+function PickerScreen({ t, locale, surveys, loading, onOpen, onCreateNew }) {
+  return (
+    <div>
+      <p style={styles.sub}>{t.pickerSub}</p>
+
+      <div style={{ margin: "18px 0" }}>
+        <button onClick={onCreateNew} style={styles.submitBtn}>{t.newPollBtn}</button>
+      </div>
+
+      {loading && <div style={styles.loadingText}>{t.loading}</div>}
+
+      {!loading && surveys.length === 0 && (
+        <div style={styles.emptyState}>{t.noPollsYet}</div>
+      )}
+
+      {!loading && surveys.length > 0 && (
+        <div style={styles.pollList}>
+          {surveys.map((s) => (
+            <div key={s.surveyId} style={styles.pollCard}>
+              <div style={styles.pollCardMain}>
+                <div style={styles.pollTitle}>{s.title}</div>
+                {Array.isArray(s.tags) && s.tags.length > 0 && (
+                  <div style={styles.tagBadgeRow}>
+                    {s.tags.map((id) => <span key={id} style={styles.tagBadge}>{tagLabel(id)}</span>)}
+                  </div>
+                )}
+                <div style={styles.pollMeta}>
+                  {dateRangeSummary(s.dates, s.tz, locale)} · {t.responsesCount(s.responseCount || 0)}
+                </div>
+              </div>
+              <button onClick={() => onOpen(s.surveyId)} style={styles.smallBtn}>{t.openBtn}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ Setup / Edit form ============
+function SetupForm({ t, lang, surveyId, existingConfig, onSaved, onCancel, onDeleted }) {
+  const isEdit = !!existingConfig;
+  const detected = useMemo(() => detectTZ(), []);
+  const [title, setTitle] = useState(existingConfig?.title || "");
+  const [description, setDescription] = useState(existingConfig?.description || "");
+  const [tags, setTags] = useState(Array.isArray(existingConfig?.tags) ? existingConfig.tags : []);
+  const [dates, setDates] = useState(Array.isArray(existingConfig?.dates) ? existingConfig.dates : []);
+  const [dateInput, setDateInput] = useState(todayStr());
+  const [startMinutes, setStartMinutes] = useState(existingConfig?.startMinutes ?? 9 * 60);
+  const [endMinutes, setEndMinutes] = useState(existingConfig?.endMinutes ?? 17 * 60);
+  const [tz, setTz] = useState(existingConfig?.tz || detected);
+  const [passphrase, setPassphrase] = useState(existingConfig?.passphrase || "");
+  const [error, setError] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearMsg, setClearMsg] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const opts = useMemo(() => timeOptions(lang), [lang]);
+
+  function addDate() {
+    if (!dateInput) return;
+    setDates((prev) => Array.from(new Set([...(Array.isArray(prev) ? prev : []), dateInput])).sort());
+  }
+  function removeDate(d) {
+    setDates((prev) => (Array.isArray(prev) ? prev : []).filter((x) => x !== d));
+  }
+  function toggleTag(id) {
+    setTags((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
     });
   }
-  out.sort(function (a, b) { return a.updatedAt < b.updatedAt ? 1 : -1; });
-  return out;
-}
 
-function countRespondents_(ss, surveyId) {
-  var sh = ss.getSheetByName(responsesSheetName_(surveyId));
-  if (!sh) return 0;
-  var lastRow = sh.getLastRow();
-  if (lastRow < 2) return 0;
-  var ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
-  var seen = {};
-  ids.forEach(function (r) { if (r[0]) seen[r[0]] = true; });
-  return Object.keys(seen).length;
-}
-
-function readConfig_(ss, surveyId) {
-  var sh = getSheet_(ss, SURVEYS_SHEET, ['survey_id', 'config_json', 'updated_at']);
-  var values = sh.getDataRange().getValues();
-  for (var i = 1; i < values.length; i++) {
-    if (values[i][0] === surveyId) {
-      try {
-        return JSON.parse(values[i][1]);
-      } catch (err) {
-        return null;
+  async function handleSubmit() {
+    setError(null);
+    if (!title.trim()) { setError(t.needTitle); return; }
+    if (dates.length === 0) { setError(t.needAtLeastOneDate); return; }
+    if (endMinutes <= startMinutes) { setError(t.needValidWindow); return; }
+    const idToUse = surveyId || generateSurveyId(title);
+    const newConfig = {
+      title: title.trim(),
+      description: description.trim(),
+      tags: [...tags],
+      dates: [...dates].sort(),
+      startMinutes, endMinutes, tz,
+      passphrase: passphrase.trim(),
+      createdAt: existingConfig?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setSaving(true);
+    try {
+      const result = await apiSaveConfig(idToUse, newConfig);
+      if (result.ok) {
+        onSaved(idToUse, result.config);
+      } else {
+        setError(t.configSaveFailed);
       }
+    } catch (e) {
+      setError(t.saveError);
+    } finally {
+      setSaving(false);
     }
   }
-  return null;
-}
 
-function writeConfig_(ss, surveyId, config) {
-  var sh = getSheet_(ss, SURVEYS_SHEET, ['survey_id', 'config_json', 'updated_at']);
-  var values = sh.getDataRange().getValues();
-  var now = new Date().toISOString();
-  for (var i = 1; i < values.length; i++) {
-    if (values[i][0] === surveyId) {
-      sh.getRange(i + 1, 2, 1, 2).setValues([[JSON.stringify(config), now]]);
-      return;
+  async function handleClearResponses() {
+    if (!window.confirm(t.clearResponsesConfirm)) return;
+    setClearing(true);
+    try {
+      const result = await apiClearResponses(surveyId, passphrase);
+      setClearMsg(result.ok);
+      if (!result.ok) setError(t.wrongPass);
+    } catch (e) {
+      setError(t.saveError);
+    } finally {
+      setClearing(false);
     }
   }
-  sh.appendRow([surveyId, JSON.stringify(config), now]);
-}
 
-function readResponses_(ss, surveyId) {
-  var sh = ss.getSheetByName(responsesSheetName_(surveyId));
-  if (!sh) return [];
-  var values = sh.getDataRange().getValues();
-  var rows = values.slice(1).filter(function (r) { return r[0]; });
-  var map = {};
-  rows.forEach(function (r) {
-    var id = r[0];
-    if (!map[id]) map[id] = { id: id, name: r[1], tz: r[2], submittedAt: r[3], slots: [] };
-    map[id].slots.push(r[4]);
-  });
-  return Object.keys(map).map(function (k) { return map[k]; });
-}
-
-function appendResponse_(ss, surveyId, record) {
-  var sh = getSheet_(ss, responsesSheetName_(surveyId), ['id', 'name', 'tz', 'submitted_at', 'slot_utc_iso']);
-  var slots = record.slots || [];
-  if (!slots.length) return;
-  var rows = slots.map(function (slot) {
-    return [record.id, record.name, record.tz, record.submittedAt, slot];
-  });
-  sh.getRange(sh.getLastRow() + 1, 1, rows.length, 5).setValues(rows);
-}
-
-function clearResponses_(ss, surveyId) {
-  var sh = ss.getSheetByName(responsesSheetName_(surveyId));
-  if (!sh) return;
-  var lastRow = sh.getLastRow();
-  if (lastRow > 1) sh.deleteRows(2, lastRow - 1);
-}
-
-function deleteSurvey_(ss, surveyId) {
-  var sh = getSheet_(ss, SURVEYS_SHEET, ['survey_id', 'config_json', 'updated_at']);
-  var values = sh.getDataRange().getValues();
-  for (var i = values.length - 1; i >= 1; i--) {
-    if (values[i][0] === surveyId) {
-      sh.deleteRow(i + 1);
-      break;
+  async function handleDeleteSurvey() {
+    if (!window.confirm(t.deleteSurveyConfirm)) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const result = await apiDeleteSurvey(surveyId, passphrase);
+      if (result.ok) {
+        onDeleted();
+      } else {
+        setError(t.deleteSurveyFailed);
+      }
+    } catch (e) {
+      setError(t.saveError);
+    } finally {
+      setDeleting(false);
     }
   }
-  var respSheet = ss.getSheetByName(responsesSheetName_(surveyId));
-  if (respSheet) ss.deleteSheet(respSheet);
+
+  return (
+    <div>
+      <h1 style={styles.h1}>{isEdit ? t.setupHeadingEdit : t.setupHeadingNew}</h1>
+      <p style={styles.sub}>{t.setupSub}</p>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.titleLabel}</label>
+        <input style={styles.input} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t.titlePlaceholder} />
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.descLabel}</label>
+        <textarea style={{ ...styles.input, minHeight: 70, resize: "vertical" }} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t.descPlaceholder} />
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.outputsLabel}</label>
+        <div style={styles.tagOptionsWrap}>
+          {OUTPUT_TAGS.map((tag) => {
+            const active = tags.includes(tag.id);
+            return (
+              <button
+                key={tag.id}
+                type="button"
+                onClick={() => toggleTag(tag.id)}
+                style={{ ...styles.tagOption, ...(active ? styles.tagOptionActive : {}) }}
+              >
+                {tag.label}
+              </button>
+            );
+          })}
+        </div>
+        <span style={styles.mutedText}>{t.outputsHint}</span>
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.datesLabel}</label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input type="date" style={{ ...styles.input, maxWidth: 200 }} value={dateInput} onChange={(e) => setDateInput(e.target.value)} />
+          <button type="button" onClick={addDate} style={styles.smallBtn}>{t.addDate}</button>
+        </div>
+        <div style={styles.chipsWrap}>
+          {dates.length === 0 && <span style={styles.mutedText}>{t.noDatesYet}</span>}
+          {dates.map((d) => (
+            <span key={d} style={styles.chip}>
+              {d}
+              <button type="button" onClick={() => removeDate(d)} style={styles.chipX} aria-label={t.remove}>&times;</button>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.windowLabel}</label>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={styles.miniLabel}>{t.fromLabel}</span>
+            <select style={styles.input} value={startMinutes} onChange={(e) => setStartMinutes(Number(e.target.value))}>
+              {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={styles.miniLabel}>{t.toLabel}</span>
+            <select style={styles.input} value={endMinutes} onChange={(e) => setEndMinutes(Number(e.target.value))}>
+              {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.yourTzLabel} {tz === detected && <span style={styles.detectedTag}>{t.autoDetected}</span>}</label>
+        <select style={styles.input} value={tz} onChange={(e) => setTz(e.target.value)}>
+          {!COMMON_ZONES.includes(detected) && <option value={detected}>{tzLabel(detected)}</option>}
+          {COMMON_ZONES.map((z) => <option key={z} value={z}>{tzLabel(z)}</option>)}
+        </select>
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>{t.passLabel}</label>
+        <input style={styles.input} type="text" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} placeholder={t.passPlaceholder} />
+        <span style={styles.mutedText}>{t.passHint}</span>
+      </div>
+
+      {error && <div style={styles.errorText}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+        <button onClick={handleSubmit} disabled={saving} style={styles.submitBtn}>{isEdit ? t.saveBtn : t.publishBtn}</button>
+        {onCancel && <button onClick={onCancel} style={styles.smallBtn}>{t.cancelEditBtn}</button>}
+      </div>
+
+      {isEdit && (
+        <div style={styles.dangerZone}>
+          <button onClick={handleClearResponses} disabled={clearing} style={styles.dangerBtn}>{t.clearResponsesBtn}</button>
+          {clearMsg && <span style={styles.mutedText}>&#10003;</span>}
+          <button onClick={handleDeleteSurvey} disabled={deleting} style={styles.dangerBtn}>{t.deleteSurveyBtn}</button>
+        </div>
+      )}
+    </div>
+  );
 }
+
+// ============ Passphrase gate ============
+function PassGate({ t, config, onUnlock, onCancel }) {
+  const [val, setVal] = useState("");
+  const [err, setErr] = useState(false);
+  function submit() {
+    if (val === config.passphrase) onUnlock();
+    else setErr(true);
+  }
+  return (
+    <div style={styles.gateBox}>
+      <p style={styles.sub}>{t.passPrompt}</p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <input
+          style={styles.input} type="password" value={val}
+          onChange={(e) => { setVal(e.target.value); setErr(false); }}
+          placeholder={t.passPlaceholderGate}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        <button onClick={submit} style={styles.submitBtn}>{t.unlockBtn}</button>
+        <button onClick={onCancel} style={styles.smallBtn}>{t.cancelBtn}</button>
+      </div>
+      {err && <div style={styles.errorText}>{t.wrongPass}</div>}
+    </div>
+  );
+}
+
+// ============ Respondent app (pick + results) ============
+function RespondentApp({ t, lang, locale, hour12, surveyId, config, onOrganizerClick, onBackToPolls }) {
+  const detected = useMemo(() => detectTZ(), []);
+  const [name, setName] = useState("");
+  const [tz, setTz] = useState(detected);
+  const [tzOverridden, setTzOverridden] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [dragging, setDragging] = useState(false);
+  const [dragMode, setDragMode] = useState(true);
+  const [submitted, setSubmitted] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [view, setView] = useState("pick");
+  const [allResponses, setAllResponses] = useState([]);
+  const [loadingResults, setLoadingResults] = useState(false);
+  const [copyState, setCopyState] = useState("idle");
+  const [shareState, setShareState] = useState("idle");
+
+  async function handleShare() {
+    const link = buildShareLink(surveyId);
+    try {
+      if (link) {
+        await navigator.clipboard.writeText(link);
+        setShareState("copied");
+      } else {
+        await navigator.clipboard.writeText(t.shareFallback.replace("{title}", config.title));
+        setShareState("fallback");
+      }
+    } catch {
+      setShareState("idle");
+    }
+    setTimeout(() => setShareState("idle"), 2200);
+  }
+
+  useEffect(() => {
+    const onUp = () => setDragging(false);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchend", onUp);
+    return () => {
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("touchend", onUp);
+    };
+  }, []);
+
+  const rawSlots = Math.round((config.endMinutes - config.startMinutes) / SLOT_MIN);
+  const numSlots = Number.isFinite(rawSlots) && rawSlots > 0 ? rawSlots : 1;
+  const validDates = Array.isArray(config.dates) ? config.dates : [];
+
+  const toggleSlot = useCallback((key, forceMode) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const mode = forceMode !== undefined ? forceMode : !next.has(key);
+      if (mode) next.add(key); else next.delete(key);
+      return next;
+    });
+  }, []);
+  const handleMouseDown = (key) => {
+    const willAdd = !selected.has(key);
+    setDragMode(willAdd); setDragging(true); toggleSlot(key, willAdd);
+  };
+  const handleMouseEnter = (key) => { if (dragging) toggleSlot(key, dragMode); };
+
+  const grid = useMemo(() => {
+    return validDates.map((dateStr) => {
+      const rows = [];
+      for (let s = 0; s < numSlots; s++) {
+        rows.push({ date: slotToDate(dateStr, s, config.tz, config.startMinutes) });
+      }
+      return rows;
+    });
+  }, [config, numSlots]);
+
+  const rowLabels = useMemo(() => {
+    if (grid.length === 0) return [];
+    return grid[0].map((cell) => timeLabel(cell.date, tz, locale, hour12));
+  }, [grid, tz, locale, hour12]);
+  const colLabels = useMemo(() => grid.map((col) => (col.length ? colHeaderLabel(col[0].date, tz, locale) : "")), [grid, tz, locale]);
+
+  async function loadResults() {
+    setLoadingResults(true);
+    try {
+      const items = await apiListResponses(surveyId);
+      items.sort((a, b) => (a.submittedAt < b.submittedAt ? 1 : -1));
+      setAllResponses(items);
+    } catch {
+      // keep whatever is already shown
+    } finally {
+      setLoadingResults(false);
+    }
+  }
+  useEffect(() => { if (view === "results") loadResults(); }, [view]);
+
+  async function handleSubmit() {
+    if (selected.size === 0) return;
+    setSaveError(null);
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const record = {
+      id,
+      name: name.trim() || "Anonymous",
+      tz,
+      submittedAt: new Date().toISOString(),
+      slots: Array.from(selected).map((key) => {
+        const [dIdx, sIdx] = key.split("-").map(Number);
+        return slotToDate(validDates[dIdx], sIdx, config.tz, config.startMinutes).toISOString();
+      }),
+    };
+    try {
+      const result = await apiSaveResponse(surveyId, record);
+      if (result.ok) {
+        setSubmitted(true);
+        setAllResponses(result.responses);
+      } else {
+        setSaveError(t.responseSaveFailed);
+      }
+    } catch (e) {
+      setSaveError(t.saveError);
+    }
+  }
+
+  function exportCSV() {
+    const lines = ["name,timezone,submitted_at,slot_utc_iso"];
+    allResponses.forEach((r) => {
+      r.slots.forEach((s) => lines.push(`"${r.name.replace(/"/g, '""')}","${r.tz}","${r.submittedAt}","${s}"`));
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "availability_responses.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function copySummary() {
+    const counts = {};
+    allResponses.forEach((r) => r.slots.forEach((iso) => { counts[iso] = (counts[iso] || 0) + 1; }));
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const lines = [`${config.title} — ${t.bestTimes} (${tz})`, ""];
+    sorted.slice(0, 20).forEach(([iso, count]) => {
+      lines.push(`${fullLabel(new Date(iso), tz, locale, hour12)} — ${count}/${allResponses.length}`);
+    });
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1500);
+    } catch { setCopyState("idle"); }
+  }
+
+  const selectedCount = selected.size;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <button onClick={onBackToPolls} style={styles.backLink}>{t.backToPolls}</button>
+        <button onClick={handleShare} style={styles.smallBtn}>
+          {shareState === "copied" ? t.linkCopied : shareState === "fallback" ? t.shareFallbackCopied : t.shareBtn}
+        </button>
+      </div>
+      <h1 style={styles.h1}>{config.title}</h1>
+      {Array.isArray(config.tags) && config.tags.length > 0 && (
+        <div style={styles.tagBadgeRow}>
+          {config.tags.map((id) => <span key={id} style={styles.tagBadge}>{tagLabel(id)}</span>)}
+        </div>
+      )}
+      {config.description && <p style={styles.sub}>{config.description}</p>}
+      <p style={{ ...styles.sub, marginTop: 6 }}>{t.respSub}</p>
+
+      <div style={styles.tabs}>
+        <button onClick={() => setView("pick")} style={{ ...styles.tabBtn, ...(view === "pick" ? styles.tabBtnActive : {}) }}>{t.tabPick}</button>
+        <button onClick={() => setView("results")} style={{ ...styles.tabBtn, ...(view === "results" ? styles.tabBtnActive : {}) }}>{t.tabResults}</button>
+      </div>
+
+      {view === "pick" && (
+        <React.Fragment>
+          <div style={styles.controlsRow}>
+            <div style={styles.field}>
+              <label style={styles.label}>{t.nameLabel}</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.namePlaceholder} style={styles.input} />
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>{t.yourTzLabel} {!tzOverridden && <span style={styles.detectedTag}>{t.autoDetected}</span>}</label>
+              <select
+                value={tz}
+                onChange={(e) => { setTz(e.target.value); setTzOverridden(e.target.value !== detected); }}
+                style={styles.input}
+              >
+                {!COMMON_ZONES.includes(detected) && <option value={detected}>{tzLabel(detected)}</option>}
+                {COMMON_ZONES.map((z) => <option key={z} value={z}>{tzLabel(z)}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={styles.gridWrap}>
+            <div style={{ ...styles.gridInner, gridTemplateColumns: `76px repeat(${validDates.length}, 1fr)` }} onMouseLeave={() => setDragging(false)}>
+              <div style={styles.cornerCell} />
+              {colLabels.map((c, i) => <div key={i} style={styles.dayHeader}>{c}</div>)}
+              {rowLabels.map((rl, rowIdx) => (
+                <React.Fragment key={rowIdx}>
+                  <div style={styles.timeLabelCell}>{rowIdx % 2 === 0 ? rl : ""}</div>
+                  {validDates.map((_, dateIdx) => {
+                    const key = slotKey(dateIdx, rowIdx);
+                    const isOn = selected.has(key);
+                    return (
+                      <div
+                        key={key}
+                        onMouseDown={() => handleMouseDown(key)}
+                        onMouseEnter={() => handleMouseEnter(key)}
+                        onTouchStart={() => handleMouseDown(key)}
+                        style={{ ...styles.cell, ...(isOn ? styles.cellOn : {}), borderTopStyle: rowIdx % 2 === 0 ? "solid" : "dashed" }}
+                      />
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.footerRow}>
+            <div style={styles.countTag}>
+              {selectedCount === 0 ? t.noSlotsYet : `${selectedCount} · ${(selectedCount / 2).toFixed(1)}h`}
+            </div>
+            <button onClick={handleSubmit} disabled={selectedCount === 0} style={{ ...styles.submitBtn, ...(selectedCount === 0 ? styles.submitBtnDisabled : {}) }}>
+              {t.submitBtn}
+            </button>
+          </div>
+          {saveError && <div style={styles.errorText}>{saveError}</div>}
+          {submitted && <div style={styles.successBanner}>{t.savedBanner}</div>}
+        </React.Fragment>
+      )}
+
+      {view === "results" && (
+        <ResultsView
+          t={t} locale={locale} hour12={hour12}
+          responses={allResponses} loading={loadingResults} viewerTz={tz}
+          onExport={exportCSV} onCopy={copySummary} copyState={copyState} onRefresh={loadResults}
+        />
+      )}
+
+      <div style={styles.organizerFooter}>
+        <button onClick={onOrganizerClick} style={styles.organizerLinkBtn}>{t.organizerLink}</button>
+      </div>
+    </div>
+  );
+}
+
+function ResultsView({ t, locale, hour12, responses, loading, viewerTz, onExport, onCopy, copyState, onRefresh }) {
+  const overlapMap = useMemo(() => {
+    const counts = {};
+    responses.forEach((r) => {
+      r.slots.forEach((iso) => {
+        counts[iso] = counts[iso] || { count: 0 };
+        counts[iso].count += 1;
+      });
+    });
+    return counts;
+  }, [responses]);
+  const bestSlots = useMemo(() => Object.entries(overlapMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8), [overlapMap]);
+  const maxCount = responses.length || 1;
+
+  return (
+    <div>
+      <div style={styles.resultsBar}>
+        <div style={styles.label}>{loading ? t.loading : `${responses.length} · ${tzShort(viewerTz)}`}</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onRefresh} style={styles.smallBtn}>{t.refresh}</button>
+          <button onClick={onCopy} style={styles.smallBtn}>{copyState === "copied" ? t.copied : t.copySummary}</button>
+          <button onClick={onExport} style={styles.smallBtn}>{t.exportCsv}</button>
+        </div>
+      </div>
+
+      {responses.length === 0 && !loading && <div style={styles.emptyState}>{t.noResponsesYet}</div>}
+
+      {bestSlots.length > 0 && (
+        <div style={styles.bestWrap}>
+          <div style={styles.bestTitle}>{t.bestTimes}</div>
+          {bestSlots.map(([iso, data]) => {
+            const label = fullLabel(new Date(iso), viewerTz, locale, hour12);
+            const pct = Math.round((data.count / maxCount) * 100);
+            return (
+              <div key={iso} style={styles.bestRow}>
+                <div style={styles.bestTime}>{label}</div>
+                <div style={styles.barTrack}><div style={{ ...styles.barFill, width: `${pct}%` }} /></div>
+                <div style={styles.bestCount}>{data.count}/{maxCount}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {responses.length > 0 && (
+        <div style={styles.respList}>
+          <div style={styles.bestTitle}>{t.allResponses}</div>
+          {responses.map((r) => (
+            <div key={r.id} style={styles.respRow}>
+              <div style={styles.respName}>{r.name}</div>
+              <div style={styles.respMeta}>{tzShort(r.tz)} · {r.slots.length}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ Styles ============
+const INK = "#14181F", PAPER = "#F7F4EE", GREEN = "#2FA860", SLATE = "#8B93A3", LINE = "rgba(20,24,31,0.12)";
+const DISPLAY_FONT = "'Avenir Next', 'Century Gothic', Futura, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+const MONO_FONT = "'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace";
+
+const styles = {
+  page: { minHeight: "100vh", background: INK, color: PAPER, fontFamily: DISPLAY_FONT, padding: "24px 16px 60px", display: "flex", justifyContent: "center" },
+  shell: { width: "100%", maxWidth: 920 },
+  topBar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  eyebrow: { fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.18em", color: GREEN, fontWeight: 600 },
+  langToggle: { display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "4px 8px" },
+  langBtn: { fontFamily: MONO_FONT, fontSize: 11, border: "none", background: "transparent", color: SLATE, cursor: "pointer", padding: "2px 4px", fontWeight: 600 },
+  langBtnActive: { color: GREEN },
+  langDivider: { color: "rgba(255,255,255,0.2)", fontSize: 11 },
+  loadingText: { color: SLATE, fontFamily: MONO_FONT, fontSize: 13, marginTop: 40 },
+  h1: { fontSize: "clamp(24px, 4.5vw, 34px)", fontWeight: 700, margin: "10px 0 4px", letterSpacing: "-0.02em" },
+  sub: { color: SLATE, fontSize: 14, lineHeight: 1.5, marginTop: 6, maxWidth: 620 },
+  backLink: { background: "transparent", border: "none", color: SLATE, fontFamily: MONO_FONT, fontSize: 11, cursor: "pointer", padding: 0, marginBottom: 10 },
+  tabs: { display: "flex", gap: 4, margin: "18px 0 20px", background: "rgba(255,255,255,0.05)", padding: 4, borderRadius: 10, width: "fit-content" },
+  tabBtn: { fontFamily: MONO_FONT, fontSize: 12, letterSpacing: "0.02em", padding: "8px 16px", borderRadius: 7, border: "none", background: "transparent", color: SLATE, cursor: "pointer" },
+  tabBtnActive: { background: PAPER, color: INK, fontWeight: 600 },
+  controlsRow: { display: "flex", gap: 16, marginBottom: 18, flexWrap: "wrap" },
+  field: { display: "flex", flexDirection: "column", gap: 6, minWidth: 220, flex: 1, marginBottom: 16 },
+  miniLabel: { fontFamily: MONO_FONT, fontSize: 10, color: SLATE },
+  label: { fontFamily: MONO_FONT, fontSize: 11, color: SLATE, letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: 8 },
+  detectedTag: { fontSize: 10, background: "rgba(47,168,96,0.15)", color: GREEN, padding: "2px 6px", borderRadius: 4 },
+  input: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "10px 12px", color: PAPER, fontSize: 14, fontFamily: DISPLAY_FONT, outline: "none" },
+  mutedText: { color: SLATE, fontSize: 12, marginTop: 2 },
+  chipsWrap: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  chip: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(47,168,96,0.14)", color: GREEN, padding: "6px 8px 6px 12px", borderRadius: 20, fontFamily: MONO_FONT, fontSize: 12 },
+  chipX: { border: "none", background: "transparent", color: GREEN, cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 4px" },
+  gridWrap: { background: PAPER, borderRadius: 14, padding: 12, overflowX: "auto", userSelect: "none" },
+  gridInner: { display: "grid", minWidth: 560 },
+  cornerCell: { position: "sticky", left: 0, background: PAPER, zIndex: 2 },
+  dayHeader: { fontFamily: MONO_FONT, fontSize: 11, fontWeight: 600, color: INK, textAlign: "center", padding: "6px 2px 10px", borderBottom: `2px solid ${INK}` },
+  timeLabelCell: { fontFamily: MONO_FONT, fontSize: 11, color: "#5b6270", textAlign: "right", paddingRight: 10, position: "sticky", left: 0, background: PAPER, display: "flex", alignItems: "flex-start", justifyContent: "flex-end", height: 18, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
+  cell: { height: 18, borderTop: `1px solid ${LINE}`, borderLeft: `1px solid ${LINE}`, cursor: "pointer", background: "transparent", transition: "background 60ms ease" },
+  cellOn: { background: GREEN },
+  footerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, gap: 12, flexWrap: "wrap" },
+  countTag: { fontFamily: MONO_FONT, fontSize: 12, color: SLATE },
+  submitBtn: { background: GREEN, color: INK, border: "none", borderRadius: 8, padding: "11px 22px", fontWeight: 700, fontSize: 14, fontFamily: DISPLAY_FONT, cursor: "pointer" },
+  submitBtnDisabled: { opacity: 0.35, cursor: "not-allowed" },
+  errorText: { marginTop: 10, color: "#F28B82", fontSize: 13, fontFamily: MONO_FONT },
+  successBanner: { marginTop: 14, background: "rgba(47,168,96,0.12)", color: GREEN, border: "1px solid rgba(47,168,96,0.3)", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: MONO_FONT },
+  resultsBar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 },
+  smallBtn: { background: "rgba(255,255,255,0.08)", color: PAPER, border: "1px solid rgba(255,255,255,0.15)", borderRadius: 7, padding: "9px 14px", fontSize: 12, fontFamily: MONO_FONT, cursor: "pointer" },
+  emptyState: { color: SLATE, fontSize: 14, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 24, textAlign: "center" },
+  bestWrap: { background: PAPER, color: INK, borderRadius: 14, padding: 20, marginBottom: 20 },
+  bestTitle: { fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.08em", color: "#5b6270", marginBottom: 14, textTransform: "uppercase" },
+  bestRow: { display: "grid", gridTemplateColumns: "200px 1fr 60px", alignItems: "center", gap: 12, marginBottom: 10 },
+  bestTime: { fontFamily: MONO_FONT, fontSize: 13, fontWeight: 600 },
+  barTrack: { height: 10, background: "rgba(20,24,31,0.08)", borderRadius: 6, overflow: "hidden" },
+  barFill: { height: "100%", background: GREEN, borderRadius: 6 },
+  bestCount: { fontFamily: MONO_FONT, fontSize: 12, color: "#5b6270", textAlign: "right" },
+  respList: { background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 20 },
+  respRow: { display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: 13 },
+  respName: { fontWeight: 600 },
+  respMeta: { color: SLATE, fontFamily: MONO_FONT, fontSize: 12 },
+  organizerFooter: { marginTop: 30, textAlign: "center" },
+  organizerLinkBtn: { background: "transparent", border: "none", color: SLATE, fontFamily: MONO_FONT, fontSize: 11, cursor: "pointer", textDecoration: "underline" },
+  dangerZone: { marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  dangerBtn: { background: "rgba(242,139,130,0.12)", color: "#F28B82", border: "1px solid rgba(242,139,130,0.3)", borderRadius: 7, padding: "9px 14px", fontSize: 12, fontFamily: MONO_FONT, cursor: "pointer" },
+  gateBox: { marginTop: 30, maxWidth: 560 },
+  stepsList: { color: PAPER, fontSize: 14, lineHeight: 1.9, paddingLeft: 20, marginTop: 16 },
+  stepsItem: { marginBottom: 4 },
+  pollList: { display: "flex", flexDirection: "column", gap: 10 },
+  pollCard: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.05)", borderRadius: 12, padding: "14px 18px", gap: 12, flexWrap: "wrap" },
+  pollCardMain: { display: "flex", flexDirection: "column", gap: 4 },
+  pollTitle: { fontWeight: 700, fontSize: 16 },
+  pollMeta: { color: SLATE, fontFamily: MONO_FONT, fontSize: 12 },
+  tagOptionsWrap: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 },
+  tagOption: { fontFamily: MONO_FONT, fontSize: 12, padding: "7px 12px", borderRadius: 20, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: PAPER, cursor: "pointer", textAlign: "left" },
+  tagOptionActive: { background: GREEN, color: INK, borderColor: GREEN, fontWeight: 700 },
+  tagBadgeRow: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6, marginBottom: 2 },
+  tagBadge: { fontFamily: MONO_FONT, fontSize: 10, padding: "3px 9px", borderRadius: 12, background: "rgba(47,168,96,0.15)", color: GREEN, display: "inline-block" },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ErrorBoundary><App /></ErrorBoundary>);
+</script>
+</body>
+</html>
